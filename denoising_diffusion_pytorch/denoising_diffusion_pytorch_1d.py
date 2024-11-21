@@ -6,6 +6,7 @@ from collections import namedtuple
 from multiprocessing import cpu_count
 
 import torch
+import numpy as np
 from torch import nn, einsum, Tensor
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
@@ -258,6 +259,7 @@ class Attention(Module):
 class Unet1D(Module):
     def __init__(
         self,
+        seq_length,
         dim,
         init_dim = None,
         out_dim = None,
@@ -282,7 +284,9 @@ class Unet1D(Module):
         input_channels = channels * (2 if self_condition else 1)
 
         init_dim = default(init_dim, dim)
-        self.init_conv = nn.Conv1d(input_channels, init_dim, 7, padding = 3)
+        kernel_size = 1 if seq_length == 1 else 7
+        padding = 0 if seq_length == 1 else 3
+        self.init_conv = nn.Conv1d(input_channels, init_dim, kernel_size=kernel_size, padding=padding)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -317,12 +321,16 @@ class Unet1D(Module):
 
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
-
+            downsampling_op = (
+                Downsample(dim_in, dim_out) if not is_last and seq_length > 1
+                else nn.Conv1d(dim_in, dim_out, kernel_size=1)
+            )
             self.downs.append(ModuleList([
                 resnet_block(dim_in, dim_in),
                 resnet_block(dim_in, dim_in),
                 Residual(PreNorm(dim_in, LinearAttention(dim_in))),
-                Downsample(dim_in, dim_out) if not is_last else nn.Conv1d(dim_in, dim_out, 3, padding = 1)
+                downsampling_op
+                # Downsample(dim_in, dim_out) if not is_last else nn.Conv1d(dim_in, dim_out, 3, padding = 1)
             ]))
 
         mid_dim = dims[-1]
@@ -332,14 +340,19 @@ class Unet1D(Module):
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
+            upsampling_op = (
+                Upsample(dim_out, dim_in) if not is_last and seq_length > 1
+                else nn.Conv1d(dim_out, dim_in, kernel_size=1)
+            )
 
             self.ups.append(ModuleList([
                 resnet_block(dim_out + dim_in, dim_out),
                 resnet_block(dim_out + dim_in, dim_out),
                 Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                Upsample(dim_out, dim_in) if not is_last else  nn.Conv1d(dim_out, dim_in, 3, padding = 1)
+                upsampling_op
+                # Upsample(dim_out, dim_in) if not is_last else  nn.Conv1d(dim_out, dim_in, 3, padding = 1)
             ]))
-
+ 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
@@ -875,8 +888,7 @@ class Trainer1D(object):
                             all_samples_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
 
                         all_samples = torch.cat(all_samples_list, dim = 0)
-
-                        torch.save(all_samples, str(self.results_folder / f'sample-{milestone}.png'))
+                        np.save(str(self.results_folder / f'sample-{milestone}.npy'), all_samples.cpu().numpy())
                         self.save(milestone)
 
                 pbar.update(1)
