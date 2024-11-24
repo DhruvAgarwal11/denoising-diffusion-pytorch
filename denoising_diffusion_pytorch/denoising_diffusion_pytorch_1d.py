@@ -321,18 +321,13 @@ class Unet1D(Module):
 
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
-            downsampling_op = (
-                Downsample(dim_in, dim_out) if not is_last and seq_length > 1
-                else nn.Conv1d(dim_in, dim_out, kernel_size=1)
-            )
+
             self.downs.append(ModuleList([
                 resnet_block(dim_in, dim_in),
                 resnet_block(dim_in, dim_in),
                 Residual(PreNorm(dim_in, LinearAttention(dim_in))),
-                downsampling_op
-                # Downsample(dim_in, dim_out) if not is_last else nn.Conv1d(dim_in, dim_out, 3, padding = 1)
+                Downsample(dim_in, dim_out) if not is_last else nn.Conv1d(dim_in, dim_out, 3, padding = 1)
             ]))
-
         mid_dim = dims[-1]
         self.mid_block1 = resnet_block(mid_dim, mid_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim, dim_head = attn_dim_head, heads = attn_heads)))
@@ -340,19 +335,13 @@ class Unet1D(Module):
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
-            upsampling_op = (
-                Upsample(dim_out, dim_in) if not is_last and seq_length > 1
-                else nn.Conv1d(dim_out, dim_in, kernel_size=1)
-            )
 
             self.ups.append(ModuleList([
                 resnet_block(dim_out + dim_in, dim_out),
                 resnet_block(dim_out + dim_in, dim_out),
                 Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                upsampling_op
-                # Upsample(dim_out, dim_in) if not is_last else  nn.Conv1d(dim_out, dim_in, 3, padding = 1)
+                Upsample(dim_out, dim_in) if not is_last else nn.Conv1d(dim_out, dim_in, 3, padding = 1)
             ]))
- 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
@@ -370,7 +359,6 @@ class Unet1D(Module):
         t = self.time_mlp(time)
 
         h = []
-
         for block1, block2, attn, downsample in self.downs:
             x = block1(x, t)
             h.append(x)
@@ -378,7 +366,6 @@ class Unet1D(Module):
             x = block2(x, t)
             x = attn(x)
             h.append(x)
-
             x = downsample(x)
 
         x = self.mid_block1(x, t)
@@ -716,7 +703,7 @@ class GaussianDiffusion1D(Module):
 
         loss = F.mse_loss(model_out, target, reduction = 'none')
         loss = reduce(loss, 'b ... -> b', 'mean')
-
+ 
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
@@ -829,7 +816,7 @@ class Trainer1D(object):
         device = accelerator.device
 
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), map_location=device, weights_only=True)
-
+ 
         model = self.accelerator.unwrap_model(self.model)
         model.load_state_dict(data['model'])
 

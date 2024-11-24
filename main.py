@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from denoising_diffusion_pytorch import Unet1D, GaussianDiffusion1D, Trainer1D, Dataset1D
 import sys
-sys.path.append('/home/dagarwal/Speech-Articulatory-Coding')
+sys.path.append('/home/pmendoza/Speech-Articulatory-Coding')
 from sparc import load_model
 import soundfile as sf
 import IPython.display as ipd
@@ -21,15 +21,29 @@ pitch_data_file = '/data/common/LibriTTS_R/pitch_stats.npy'
 pitch_stats_data = np.load(pitch_data_file, allow_pickle=True).item()
 
 def create_chunks(arrays, chunk_size):
-    all_arrays = []
-    for array in arrays:
-        additional_padding = (chunk_size - len(array) % chunk_size) % chunk_size
-        padded_array = np.pad(array, ((0, additional_padding), (0, 0)), mode='constant', constant_values=0)
-        split_arrays = np.array_split(padded_array, len(padded_array) // chunk_size)
-        all_arrays += split_arrays
-    return all_arrays
+    all_chunks = []
+    
+    # Calculate the number of chunks (full chunks)
+    num_chunks = len(arrays) // chunk_size
+        
+    # Split the array into chunks of size (chunk_size, 14)
+    chunks = arrays[:num_chunks * chunk_size].reshape(-1, chunk_size, 14)
+        
+    # Append the chunks to the list
+    all_chunks.append(chunks)
+    
+    # Concatenate all chunks from different arrays
+    return np.concatenate(all_chunks, axis=0)
 
-def load_and_transform_file(file_path, chunk_size):
+def expand_and_pad(arrays, chunk_size):
+
+    num_points, num_features = arrays.shape
+    padded_array = np.zeros((num_points, num_features, chunk_size))
+    padded_array[:, :, 0] = arrays
+
+    return padded_array
+
+def load_and_transform_file(file_path, chunk_size, sample_size):
     file_prefix = os.path.basename(file_path).split("_")[0]
     file_pitch_stats = pitch_stats_data[file_prefix]
     
@@ -38,19 +52,22 @@ def load_and_transform_file(file_path, chunk_size):
     pitch_data = (np.log(data['pitch']) - np.log(file_pitch_stats[0]))[:-1].reshape(-1, 1)
     loudness_data = data['loudness'][:-1].reshape(-1, 1)
     combined_data = np.concatenate([ema_data, pitch_data, loudness_data], axis=1)
-    return combined_data
 
-def get_features(chunk_size, print_every=2000):
+    sample_indices = np.random.choice(combined_data.shape[0], min(sample_size, combined_data.shape[0]), replace=False)
+    return combined_data[sample_indices]
+
+def get_features(chunk_size, sample_size=64, print_every=2000):
     file_paths = [os.path.join(root, file) 
                   for root, _, files in os.walk(articulatory_feature_directory) 
                   for file in files if file.endswith(".npy")]
 
     # Process files in parallel
+    # Change this to be 2000 to see
     total_files = len(file_paths)
     processed_files = 0
     with concurrent.futures.ProcessPoolExecutor(max_workers= (int)(cpu_count() / 3)) as executor:
         results = []
-        for idx, result in enumerate(executor.map(load_and_transform_file, file_paths, [chunk_size] * total_files)):
+        for _, result in enumerate(executor.map(load_and_transform_file, file_paths, [chunk_size] * total_files, [sample_size] * total_files)):
             if result is not None:
                 results.append(result)
             processed_files += 1
@@ -60,96 +77,53 @@ def get_features(chunk_size, print_every=2000):
     # Concatenate and chunk results
     combined_data = np.concatenate([res for res in results if res is not None], axis=0)
     if chunk_size != 1:
-        chunked_data = np.transpose(np.array(create_chunks([combined_data], chunk_size)), (0, 2, 1))
+        chunked_data = create_chunks(combined_data, chunk_size)
     else:
         chunked_data = combined_data[:, :, np.newaxis]
-    return chunked_data
+        
+    return np.transpose(chunked_data, (0, 2, 1))
 
-    #         if idx % 200 == 0:
-    #             print('here at ', idx)
-    #         if idx % 2000 == 0:
-    #             with h5py.File(f"/home/dagarwal/processed_articulatory_features.h5", "a") as hf:
-    #                 modified_data = np.transpose(np.array(create_chunks(all_data, chunk_size)), (0, 2, 1))
-    #                 hf.create_dataset(f"chunks_{idx}", data=modified_data)
-    #             with h5py.File("/home/dagarwal/processed_articulatory_features.h5", "r") as hf:
-    #                 modified_data = hf[f"chunks_{idx}"][0] 
-    #             all_data = []
-    #             if idx == 20000:
-    #                 break
-    # return modified_data
 
 # Call the function
 
-SEQUENCE_LENGTH = 1
+SEQUENCE_LENGTH = 64
+SAMPLE_SIZE = 128
 TIMESTEPS = 1000
 
-all_data_printing = get_features(SEQUENCE_LENGTH)
+all_data_printing = get_features(chunk_size=SEQUENCE_LENGTH, sample_size=SAMPLE_SIZE)
 print(all_data_printing.shape)
-        
-# def perform_synthesis(coder, articulatory_feature_file, speaker_embedding):
-#     code = np.load(articulatory_feature_file, allow_pickle=True)[()]
-#     code['spk_emb'] = speaker_embedding
-#     ipd.display(ipd.Audio(wav, rate=coder.sr))
-#     return coder.decode(**code)
-#     # to display resynthesized audio
-    
-
-# speaker_embedding_file = '/home/dagarwal/Speech-Articulatory-Coding/sample_audio/sample1.wav'
-# articulatory_feature_file = '/data/common/LibriTTS_R/articulatory_features/100_121669_000001_000000.npy'
-# coder = load_model("en", device="cpu")
-# speaker_embedding = coder.encode(speaker_embedding_file)['spk_emb']
-# perform_synthesis(coder, articulatory_feature_file, speaker_embedding)
-
-
-
 
 model = Unet1D(
     seq_length = SEQUENCE_LENGTH,
     dim = 64,
-    # dim_mults = (1, 2, 4, 8),
-    channels = 14
+    dim_mults = (1, 2, 4, 8),
+    channels = 14,
 )
 
 diffusion = GaussianDiffusion1D(
     model,
     seq_length = SEQUENCE_LENGTH,
     timesteps = TIMESTEPS,
-    objective = 'pred_x0'
+    objective = 'pred_x0',
+    auto_normalize = False
 )
 
 training_seq = torch.from_numpy(all_data_printing).float()
-# training_seq = torch.rand(64, 14, SEQUENCE_LENGTH) # features are normalized from 0 to 1
-
-# with accelerator.autocast():
-#     loss = diffusion(training_seq)
-# loss = diffusion(training_seq)
-# loss.backward()
-
-# Or using trainer
 
 dataset = Dataset1D(training_seq)  # this is just an example, but you can formulate your own Dataset and pass it into the `Trainer1D` below
 
 trainer = Trainer1D(
     diffusion,
     dataset = dataset,
-    train_batch_size = 2048,
+    train_batch_size = 2**10,
     train_lr = 8e-5,
     train_num_steps = 120000,         # total training steps
     gradient_accumulate_every = 2,    # gradient accumulation steps
     ema_decay = 0.995,                # exponential moving average decay
     amp = True,                       # turn on mixed precision
-    save_and_sample_every = 500
+    save_and_sample_every = 1000
 )
+
 trainer.train()
 
-# after a lot of training
-
-sampled_seq = diffusion.sample(batch_size = 4)
-sampled_seq.shape # (4, 32, 128)
-
-
-
-noisy_sample = diffusion.q_sample(training_seq[-1].unsqueeze(0).to('cuda:0'), t = torch.tensor([500]).to('cuda:0'))
-# denoised_sample = noisy_sample
-# for t in reversed(range(diffusion.num_timesteps)):
-#     denoised_sample, _ = diffusion.p_sample(denoised_sample, t)
+# noisy_sample = diffusion.q_sample(training_seq[-1].unsqueeze(0).to('cuda:0'), t = torch.tensor([500]).to('cuda:0'))
