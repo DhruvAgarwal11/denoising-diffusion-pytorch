@@ -86,8 +86,8 @@ def get_features(chunk_size, sample_size=64, print_every=2000):
 
 # Call the function
 
-SEQUENCE_LENGTH = 64
-SAMPLE_SIZE = 128
+SEQUENCE_LENGTH = 128
+SAMPLE_SIZE = 512
 TIMESTEPS = 1000
 
 all_data_printing = get_features(chunk_size=SEQUENCE_LENGTH, sample_size=SAMPLE_SIZE)
@@ -115,9 +115,9 @@ dataset = Dataset1D(training_seq)  # this is just an example, but you can formul
 trainer = Trainer1D(
     diffusion,
     dataset = dataset,
-    train_batch_size = 2**10,
+    train_batch_size = 2**6,
     train_lr = 8e-5,
-    train_num_steps = 120000,         # total training steps
+    train_num_steps = 60000,         # total training steps
     gradient_accumulate_every = 2,    # gradient accumulation steps
     ema_decay = 0.995,                # exponential moving average decay
     amp = True,                       # turn on mixed precision
